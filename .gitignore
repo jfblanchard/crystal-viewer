@@ -1,0 +1,13 @@
+# Cloudflare Pages deploy cache (never commit)
+deploy/.wrangler/
+.wrangler/
+
+# Local working notes that stay out of the public repo.
+# (This package only ships the clean engineering artifacts: README, deploy/, tests/.)
+
+# Session resume/status doc — local working note, never shipped.
+HANDOFF.md
+# Hermes handoff scaffolding, not repo content
+prompt-*.md
+_index.md
+*_BRIEF.md
