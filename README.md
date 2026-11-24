@@ -20,6 +20,9 @@ in a small chemistry visualization suite, alongside the
 - **Facts panel**: space group, lattice constants, nearest-neighbor distance,
   coordination number, and atoms per cell for each structure.
 
+A deluxe edition adds crystal lookup: search the Crystallography Open
+Database by name or formula, or paste a CIF file.
+
 ## Screenshots
 
 | NaCl | Diamond | Cu |
