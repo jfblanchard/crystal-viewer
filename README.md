@@ -19,11 +19,6 @@ in a small chemistry visualization suite, alongside the
   auto-rotate.
 - **Facts panel**: space group, lattice constants, nearest-neighbor distance,
   coordination number, and atoms per cell for each structure.
-- **Look up any crystal** (off by default; see Editions below): search the
-  Crystallography Open Database by name or formula (sapphire, ruby,
-  perovskite, ...) or paste a CIF file. Atomic and
-  ionic crystals render directly; molecular crystals are rejected with a
-  friendly message. Loaded structures carry a citation link to their COD entry.
 
 ## Screenshots
 
@@ -70,15 +65,6 @@ npx wrangler pages deploy . --project-name <your-project-name>
 
 The COD search runs through `deploy/functions/cod.js`, a Pages Function that
 proxies the Crystallography Open Database (COD sends no CORS headers).
-
-### Editions
-
-The hosted viewer is the free edition: the nine built-in structures, with the
-crystal lookup switched off. To turn the lookup on in your own copy, set both:
-
-- `LOOKUP_ENABLED = true` in `deploy/main.js` (shows the search and CIF paste boxes);
-- the environment variable `COD_LOOKUP=on` in your Cloudflare Pages project
-  (lets `functions/cod.js` answer searches; without it, it returns 403).
 
 ## Tests
 

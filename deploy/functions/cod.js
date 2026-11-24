@@ -30,7 +30,7 @@ export async function onRequest(context) {
   // set to "on" in the Cloudflare Pages project. A paid edition would check
   // the visitor's access here before going further.
   if (context.env.COD_LOOKUP !== 'on') {
-    return new Response('Crystal lookup is not available in this edition.', { status: 403 });
+    return new Response('Not found', { status: 404 });
   }
   const url = new URL(context.request.url);
   const search = url.searchParams.get('search');
