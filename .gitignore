@@ -11,3 +11,12 @@ HANDOFF.md
 prompt-*.md
 _index.md
 *_BRIEF.md
+
+# generated: hermes activity stamp (central-planning post-commit)
+.hermes/activity.log
+
+# local handoff/status doc, never shipped
+PROJECT_STATUS.md
+
+# local agent rules (never shipped)
+CLAUDE.md

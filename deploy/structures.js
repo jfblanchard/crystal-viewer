@@ -262,14 +262,15 @@ export function buildBlock(s, [nx, ny, nz] = [1, 1, 1]) {
       atoms.push({ el, frac: f, pos: toCartesian(f, vecs) });
     }
   }
-  const { length, tol, pairs } = s.bond;
+  const { length, tol, pairs, cutoff } = s.bond;
   const allowed = new Set(pairs.flatMap(([p, q]) => [`${p}|${q}`, `${q}|${p}`]));
+  const maxD = (a, b) => cutoff ? (cutoff[`${a}|${b}`] ?? cutoff[`${b}|${a}`] ?? 0) : length * (1 + tol);
   const bonds = [];
   for (let i = 0; i < atoms.length; i++) {
     for (let j = i + 1; j < atoms.length; j++) {
       if (!allowed.has(`${atoms[i].el}|${atoms[j].el}`)) continue;
       const d = norm(sub(atoms[i].pos, atoms[j].pos));
-      if (Math.abs(d - length) <= tol * length) bonds.push([i, j]);
+      if (d <= maxD(atoms[i].el, atoms[j].el)) bonds.push([i, j]);
     }
   }
   const center = toCartesian([nx / 2, ny / 2, nz / 2], vecs);

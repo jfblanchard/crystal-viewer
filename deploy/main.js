@@ -18,6 +18,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { STRUCTURES, STRUCTURES_BY_ID, GROUPS, tilings, buildBlock, neighborShells, unitCellAtoms } from './structures.js';
+import { parseCif, cifToStructure } from './cif.js';
 
 const STICK_RADIUS = 0.085; // Å, at the "Sticks" slider's 1×
 const VIEW_DIR = [1, 0.42, 0.55];
@@ -51,6 +52,33 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 0.8;
+controls.zoomSpeed = 0.35; // wheel zoom was far too fast; also clamp the range
+controls.minDistance = 2;
+controls.maxDistance = 300;
+window.__camera = camera; // test hook
+
+// Mice and trackpads vary wildly in how they report wheel input: some send
+// one event per notch, smooth-scrolling mice send dozens, and high-resolution
+// wheels send huge deltas. OrbitControls turns every event into a zoom step,
+// so the same physical notch can zoom 2% or 50%. Instead, take over wheel
+// handling: one fixed-size zoom step per 35 ms, sign from the accumulated
+// delta. Fast scrolling still zooms quickly; a single notch always zooms a
+// little.
+let lastWheelStep = 0;
+let syntheticWheel = false;
+renderer.domElement.addEventListener('wheel', (e) => {
+  if (syntheticWheel) { syntheticWheel = false; return; } // let our own event through
+  e.preventDefault();
+  e.stopPropagation();
+  const now = performance.now();
+  if (now - lastWheelStep < 35) return;
+  lastWheelStep = now;
+  syntheticWheel = true;
+  renderer.domElement.dispatchEvent(new WheelEvent('wheel', {
+    deltaY: Math.sign(e.deltaY) * 150,
+    clientX: e.clientX, clientY: e.clientY, bubbles: true, cancelable: true,
+  }));
+}, { capture: true });
 
 scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 0.5));
 const key = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -301,16 +329,181 @@ for (const [g, title] of GROUPS) {
 const fmt = (x, d = 2) => x.toFixed(d);
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+// --- lookup: search the Crystallography Open Database, paste a CIF ----------
+
+// Off in the free edition: hides the search box and the CIF paste box. The
+// /cod server function is gated separately (COD_LOOKUP env var), since this
+// flag alone is only cosmetic.
+const LOOKUP_ENABLED = false;
+if (!LOOKUP_ENABLED) $('lookup').style.display = 'none';
+
+function showMsg(text) {
+  $('msg').textContent = text;
+  $('msg').hidden = !text;
+}
+
+let searchTimer = null;
+$('search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = $('search').value.trim();
+  if (q.length < 2) { $('results').innerHTML = ''; return; }
+  searchTimer = setTimeout(() => searchCod(q), 350);
+});
+
+const HINTS = {
+  sapphire: 'Sapphire and ruby are both corundum (Al₂O₃), colored by different impurities.',
+  ruby: 'Ruby and sapphire are both corundum (Al₂O₃), colored by different impurities.',
+  salt: 'Table salt is the mineral halite (NaCl).',
+  ice: 'Ice is the crystalline form of water (H₂O).',
+  opal: 'Opal is amorphous silica, not a crystal. These are its crystalline relatives: quartz, cristobalite, and tridymite (all SiO₂).',
+  glass: 'Glass is amorphous, not a crystal. These are its crystalline relatives: quartz, cristobalite, and tridymite (all SiO₂).',
+  obsidian: 'Obsidian is volcanic glass: amorphous, not a crystal. These are its crystalline relatives: quartz, cristobalite, and tridymite (all SiO₂).',
+};
+
+// Facts shown in the description when a known mineral loads. Keyed by the
+// COD mineral name and by formula, so pasted CIFs match too.
+const FACTS = {
+  corundum: 'Ruby and sapphire are both this structure: corundum (Al₂O₃), colored by different impurities.',
+  'al2 o3': 'Ruby and sapphire are both this structure: corundum (Al₂O₃), colored by different impurities.',
+  halite: 'Table salt is the mineral halite (NaCl).',
+  'cl na': 'Table salt is the mineral halite (NaCl).',
+  calcite: 'Calcite and aragonite are both calcium carbonate (CaCO₃): polymorphs, same composition, different structure. Calcite is the main mineral of limestone and marble.',
+  'c ca o3': 'Calcite and aragonite are both calcium carbonate (CaCO₃): polymorphs, same composition, different structure.',
+  aragonite: 'Aragonite and calcite are both calcium carbonate (CaCO₃): polymorphs, same composition, different structure.',
+  pyrite: 'Pyrite is known as fool\u2019s gold: it looks like gold but is iron sulfide.',
+  'fe s2': 'Pyrite is known as fool\u2019s gold: it looks like gold but is iron sulfide.',
+  quartz: 'Quartz is one of the most common minerals in Earth\u2019s crust.',
+  'o2 si': 'Quartz is one of the most common minerals in Earth\u2019s crust.',
+  diamond: 'Diamond and graphite are both pure carbon: polymorphs, same composition, different structure.',
+  graphite: 'Graphite and diamond are both pure carbon: polymorphs, same composition, different structure.',
+  fluorite: 'Fluorine gets its name from fluorite.',
+  'ca f2': 'Fluorine gets its name from fluorite.',
+  galena: 'Galena is the main ore of lead.',
+  'pb s': 'Galena is the main ore of lead.',
+  hematite: 'Hematite is the main ore of iron.',
+  'fe2 o3': 'Hematite is the main ore of iron.',
+  magnetite: 'Magnetite is naturally magnetic: it is the original lodestone.',
+  'fe3 o4': 'Magnetite is naturally magnetic: it is the original lodestone.',
+  rutile: 'Rutile and anatase are both titanium dioxide (TiO₂): polymorphs, same composition, different structure.',
+  anatase: 'Anatase and rutile are both titanium dioxide (TiO₂): polymorphs, same composition, different structure.',
+  'o2 ti': 'Rutile and anatase are both titanium dioxide (TiO₂): polymorphs, same composition, different structure.',
+  ice: 'Ice is the crystalline form of water (H₂O).',
+  'h2 o': 'Ice is the crystalline form of water (H₂O).',
+};
+
+const factFor = (row) => {
+  const mineral = (row.mineral || '').toLowerCase();
+  const formula = (row.formula || '').replace(/^-\s*|\s*-$/g, '').toLowerCase();
+  return FACTS[mineral] || FACTS[formula] || '';
+};
+
+async function searchCod(q) {
+  const res = $('results');
+  res.innerHTML = '<div class="hint">Searching…</div>';
+  try {
+    const r = await fetch(`/cod?search=${encodeURIComponent(q)}`);
+    const rows = await r.json();
+    if (!rows.length) { res.innerHTML = '<div class="hint">No matches. Try a mineral name or formula.</div>'; return; }
+    res.innerHTML = '';
+    const hint = HINTS[q.trim().toLowerCase()];
+    if (hint) {
+      const h = document.createElement('div');
+      h.className = 'hint';
+      h.textContent = hint;
+      res.append(h);
+    }
+    for (const row of rows) {
+      const b = document.createElement('button');
+      b.className = 'hit';
+      const name = row.mineral || row.commonname || row.chemname || '';
+      b.innerHTML = `<span class="n">${name || row.title || row.file}</span><span class="f">${fmtFormula(row.formula.replace(/^-\s*|\s*-$/g, ''))}</span>`;
+      b.title = `${row.title} (${row.year})`;
+      b.addEventListener('click', () => loadCod(row));
+      res.append(b);
+    }
+  } catch {
+    res.innerHTML = '<div class="hint">Search failed. Check the connection.</div>';
+  }
+}
+
+async function loadCod(row) {
+  showMsg('');
+  $('results').innerHTML = '';
+  try {
+    const r = await fetch(`/cod?id=${row.file}`);
+    const text = await r.text();
+    addCustomStructure(text, {
+      id: `cod-${row.file}`,
+      name: row.mineral || row.commonname || row.chemname || row.formula.replace(/^-\s*|\s*-$/g, ''),
+      desc: factFor(row) || undefined,
+      source: {
+        cod: row.file,
+        url: `https://www.crystallography.net/cod/${row.file}.html`,
+        authors: row.authors, year: row.year, doi: row.doi,
+      },
+    });
+  } catch {
+    showMsg('Could not reach the Crystallography Open Database.');
+  }
+}
+
+$('paste-toggle').addEventListener('click', () => {
+  $('pastebox').hidden = !$('pastebox').hidden;
+  if (!$('pastebox').hidden) $('ciftext').focus();
+});
+$('load-cif').addEventListener('click', () => {
+  const text = $('ciftext').value.trim();
+  if (!text) return;
+  addCustomStructure(text, { id: `cif-${Date.now()}`, name: 'Pasted structure' });
+});
+
+function addCustomStructure(text, meta) {
+  const { structure, error } = cifToStructure(parseCif(text), meta);
+  if (error) { showMsg(error); return; }
+  if (!meta.desc) {
+    const fact = FACTS[structure.formula.toLowerCase()];
+    if (fact) structure.desc = fact;
+  }
+  customStructures.set(structure.id, structure);
+  addCustomButton(structure);
+  select(structure.id);
+}
+
+function addCustomButton(s) {
+  if (!customSection) {
+    customSection = document.createElement('section');
+    customSection.className = 'group';
+    customSection.innerHTML = '<h2>Custom</h2><div class="items"></div>';
+    $('list').append(customSection);
+  }
+  const b = document.createElement('button');
+  b.className = 'xtal';
+  b.innerHTML = `<span class="f">${s.formula}</span><span class="n">${s.name}</span>`;
+  b.title = s.spaceGroup;
+  b.addEventListener('click', () => {
+    select(s.id);
+    document.body.classList.remove('menu-open');
+  });
+  customSection.querySelector('.items').append(b);
+  buttons.set(s.id, b);
+}
+
+const SUB = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
+const fmtFormula = (f) => (f || '').split(/\s+/).map((tok) =>
+  tok.replace(/([A-Z][a-z]?)(\d+)/g, (_, el, n) => el + [...n].map((d) => SUB[d]).join('')),
+).join(' ');
+
 function renderInfo(s) {
-  $('title').innerHTML = `${s.formula} <span class="name">${s.name}</span>`;
+  $('titlebar').innerHTML = `${fmtFormula(s.formula)} <span class="name">${s.name}</span>`;
   $('desc').textContent = s.desc;
-  const { a, c, gamma } = s.cell;
-  const params = gamma === 90 && a === c
-    ? `a = ${fmt(a)} Å, all angles 90°`
-    : `a = b = ${fmt(a)} Å, c = ${fmt(c)} Å, γ = 120°`;
+  const { a, b, c, alpha, beta, gamma } = s.cell;
+  const right = alpha === 90 && beta === 90 && gamma === 90;
+  const params = right
+    ? (a === b && b === c ? `a = ${fmt(a)} Å, all angles 90°` : `a = ${fmt(a)}, b = ${fmt(b)}, c = ${fmt(c)} Å, all angles 90°`)
+    : `a = ${fmt(a)}, b = ${fmt(b)}, c = ${fmt(c)} Å, α = ${fmt(alpha)}°, β = ${fmt(beta)}°, γ = ${fmt(gamma)}°`;
   const shells = neighborShells(s);
   const els = Object.keys(s.species);
-  const cn = els.map((el) => s.species[el].cn).join(' : ');
+  const cn = els.map((el) => s.species[el].cn || shells[el].count).join(' : ');
   const [p, q] = s.bond.pairs[0];
   const contact = `${s.species[p].label.replace(/[⁺⁻²]/g, '')}–${s.species[q].label.replace(/[⁺⁻²]/g, '')} ${fmt(shells[p].distance)} Å`;
   const perCell = unitCellAtoms(s).length;
@@ -320,6 +513,7 @@ function renderInfo(s) {
     `Coordination ${cn} · ${contact} · ${plural(perCell, 'atom')} per cell`,
   ];
   if (s.id === 'graphite') lines.push(`Sheets ${fmt(c / 2)} Å apart, stacked ABAB`);
+  if (s.source) lines.push(`Data: <a href="${s.source.url}" target="_blank" rel="noopener">Crystallography Open Database · entry ${s.source.cod}</a>`);
   $('facts').innerHTML = lines.join('<br>');
 }
 
@@ -354,12 +548,14 @@ let current = null;
 let crystal = null;
 let tilingIndex = 1; // expanded block by default, so the repeat pattern reads
 let firstLoad = true;
+const customStructures = new Map();
+let customSection = null;
 
 function select(id) {
-  const s = STRUCTURES_BY_ID[id] || STRUCTURES[0];
+  const s = STRUCTURES_BY_ID[id] || customStructures.get(id) || STRUCTURES[0];
   current = s.id;
   buttons.forEach((b, k) => b.classList.toggle('active', k === s.id));
-  if (location.hash.slice(1) !== s.id) history.replaceState(null, '', `#${s.id}`);
+  if (!customStructures.has(s.id) && location.hash.slice(1) !== s.id) history.replaceState(null, '', `#${s.id}`);
   renderInfo(s);
   renderLegend(s);
   renderTiling(s);
@@ -397,6 +593,7 @@ $('spin').addEventListener('change', (e) => { controls.autoRotate = e.target.che
 $('axes').addEventListener('change', (e) => showAxes(e.target.checked));
 $('cell').addEventListener('change', (e) => { if (crystal) crystal.userData.cell.visible = e.target.checked; });
 $('poly').addEventListener('change', (e) => { if (crystal) crystal.userData.poly.visible = e.target.checked; });
+$('lightbg').addEventListener('change', (e) => { scene.background = new THREE.Color(e.target.checked ? 0xf4f5f7 : 0x111111); });
 $('menu').addEventListener('click', () => document.body.classList.toggle('menu-open'));
 renderer.domElement.addEventListener('pointerdown', () => document.body.classList.remove('menu-open'));
 
@@ -405,6 +602,7 @@ window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
   e.preventDefault();
   const i = STRUCTURES.findIndex((s) => s.id === current);
+  if (i < 0) return;
   const next = STRUCTURES[(i + (e.key === 'ArrowDown' ? 1 : -1) + STRUCTURES.length) % STRUCTURES.length];
   select(next.id);
 });
